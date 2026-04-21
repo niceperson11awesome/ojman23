@@ -84,8 +84,19 @@ local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+-- ── FIX: cache ReplicatedStorage.Events directly (same pattern as the reference script)
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RSEvents = ReplicatedStorage:WaitForChild("Events")
 
 local lp = Players.LocalPlayer
+
+-- Enable AutoRepeatQuests so the script doesn't have to re-accept every quest
+task.spawn(function()
+    local coreGui = lp.PlayerGui:WaitForChild("CoreGUI")
+    pcall(function()
+        coreGui.Settings.Stats.AutoRepeatQuests.State.Value = true
+    end)
+end)
 
 local reach = 7
 local inprestige = false
@@ -174,7 +185,11 @@ local function GetCurrentQuestName()
             local client = v.Quest:FindFirstChild("Client", true)
             if client then
                 local parentName = client.Parent.Name
-                if parentName ~= "RepeatQuest" then
+                -- AutoRepeatQuests wraps the quest inside a RepeatQuest frame —
+                -- go one level up to get the actual quest name
+                if parentName == "RepeatQuest" then
+                    return client.Parent.Parent.Name
+                else
                     return parentName
                 end
             end
@@ -682,7 +697,7 @@ TabPrestige:AddToggle("AutoPunch", { Title = "Auto Punch", Default = false, Call
 TabPrestige:AddToggle("AutoBarrage", { Title = "Auto Barrage", Default = false, Callback = function(state) getgenv().AutoBarrage = state end })
 TabPrestige:AddToggle("AutoHeavy", { Title = "Auto Heavy", Default = false, Callback = function(state) getgenv().AutoHeavy = state end })
 TabPrestige:AddToggle("AutoPressT", { Title = "Auto Press T", Default = false, Callback = function(state) getgenv().AutoT = state end })
-TabPrestige:AddToggle("AutoPressF", { Title = "Auto Press F", Default = false, Callback = function(state) getgenv().AutoF = state end })
+TabPrestige:AddToggle("AutoPressF", { Title = "Auto Press F", Default = false, Callback = function(state) getgenv().AutoPressF = state end })
 TabPrestige:AddToggle("AutoPressY", { Title = "Auto Press Y", Default = false, Callback = function(state) getgenv().AutoY = state end })
 TabPrestige:AddToggle("AutoStrength", { Title = "Auto Strength", Default = false, Callback = function(state) getgenv().AutoStrength = state end })
 TabPrestige:AddToggle("AutoHamon", { Title = "Auto Hamon", Default = false, Callback = function(state) getgenv().AutoHamon = state end })
@@ -693,6 +708,9 @@ TabPrestige:AddToggle("AutoTalent", { Title = "Auto Talent", Default = false, Ca
 
 local lastPunchTime = 0
 
+-- ══════════════════════════════════════════════════════════════
+-- AUTO PRESTIGE FARM (Start) — fixed prestige + TweenTo navigation
+-- ══════════════════════════════════════════════════════════════
 task.spawn(function()
     while task.wait() do
         if not getgenv().Start then
@@ -706,19 +724,25 @@ task.spawn(function()
                     task.wait(1)
                 else
                     char.Humanoid.PlatformStand = false
-                    
+
                     local currentLevel = GetCurrentLevel()
 
                     if currentLevel >= 100 then
                         if not inprestige then
                             inprestige = true
-                            local PrestigeEvent = game:GetService("ReplicatedStorage"):FindFirstChild("Events"):FindFirstChild("Prestige")
-                            if PrestigeEvent then
-                                PrestigeEvent:InvokeServer()
-                            end
+                            pcall(function()
+                                RSEvents.Prestige:InvokeServer()
+                            end)
                             task.wait(1)
                             SendPrestigeWebhook(false)
-                            task.wait(2)
+                            -- ── FIX: wait for the server to actually reset the level before
+                            --         resuming — without this the loop re-enters the prestige
+                            --         block immediately on the next frame since level still reads ≥100
+                            local waitStart = tick()
+                            while GetCurrentLevel() >= 100 and (tick() - waitStart) < 10 do
+                                task.wait(0.5)
+                            end
+                            task.wait(1)
                             inprestige = false
                         end
                     else
@@ -728,9 +752,17 @@ task.spawn(function()
                             if currentQuest ~= bracket.QuestName then
                                 local giver = FindQuestGiver(bracket.Giver)
                                 if giver and giver:FindFirstChild("ProximityPrompt") then
-                                    TeleportTo(giver:GetPivot())
+                                    -- Clear all physics state that combat leaves behind
+                                    -- before tweening, otherwise the humanoid snaps back
+                                    char.Humanoid.PlatformStand = false
+                                    char.HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                                    char.HumanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+                                    if currentTween then currentTween:Cancel() end
+                                    task.wait(0.1)
+                                    TweenTo(giver:GetPivot() * CFrame.new(0, 0, 3), true)
+                                    task.wait(0.1)
                                     fireproximityprompt(giver.ProximityPrompt)
-                                    task.wait(0.5)
+                                    task.wait(2)
                                 end
                             else
                                 if not char.Status.StandOut.Value then
@@ -753,7 +785,7 @@ task.spawn(function()
                                     if targetMob then
                                         char.Humanoid.PlatformStand = true
                                         char.HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
-                                        TeleportTo(targetMob:GetPivot() * CFrame.new(0, 0, reach))
+                                        TweenTo(targetMob:GetPivot() * CFrame.new(0, 0, reach), false)
                                         if (tick() - lastPunchTime) > 0.3 then
                                             lastPunchTime = tick()
                                             task.spawn(function()
@@ -784,6 +816,9 @@ end)
 
 local lastGolemPunchTime = 0
 
+-- ══════════════════════════════════════════════════════════════
+-- AUTO GOLEM FARM (Start2) — fixed TweenTo navigation
+-- ══════════════════════════════════════════════════════════════
 task.spawn(function()
     while task.wait() do
         if not getgenv().Start2 then
@@ -801,9 +836,15 @@ task.spawn(function()
                     if currentQuest ~= "GolemQuest" then
                         local giver = workspace:FindFirstChild("Golem Quest")
                         if giver and giver:FindFirstChild("ProximityPrompt") then
-                            TeleportTo(giver:GetPivot())
+                            char.Humanoid.PlatformStand = false
+                            char.HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                            char.HumanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+                            if currentTween then currentTween:Cancel() end
+                            task.wait(0.1)
+                            TweenTo(giver:GetPivot() * CFrame.new(0, 0, 3), true)
+                            task.wait(0.1)
                             fireproximityprompt(giver.ProximityPrompt)
-                            task.wait(0.5)
+                            task.wait(2)
                         end
                     else
                         if not char.Status.StandOut.Value then
@@ -826,7 +867,7 @@ task.spawn(function()
                             if targetMob then
                                 char.Humanoid.PlatformStand = true
                                 char.HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
-                                TeleportTo(targetMob:GetPivot() * CFrame.new(0, 0, reach))
+                                TweenTo(targetMob:GetPivot() * CFrame.new(0, 0, reach), false)
                                 if (tick() - lastGolemPunchTime) > 0.3 then
                                     lastGolemPunchTime = tick()
                                     task.spawn(function()
@@ -1059,7 +1100,7 @@ TabItem:AddToggle("SafeItemsFarm", {
                                     if handle then
                                         local dist = (hrp.Position - handle.Position).Magnitude
                                         if dist > 5 and dist < 500 then
-                                            TeleportTo(handle.CFrame)
+                                            TweenTo(handle.CFrame, true)
                                             task.wait(0.5)
                                         end
                                     end
@@ -1092,7 +1133,7 @@ TabItem:AddToggle("AutoElderFarm", {
                                     if not getgenv().AutoElder then break end
                                     local prompt = meteor:FindFirstChild("Meteor") and meteor.Meteor:FindFirstChild("Rock") and meteor.Meteor.Rock:FindFirstChild("ProximityPrompt")
                                     if prompt and prompt.Enabled then
-                                        TeleportTo(meteor:GetPivot())
+                                        TweenTo(meteor:GetPivot(), true)
                                         task.wait(0.2)
                                         fireproximityprompt(prompt)
                                         task.wait(0.5)
@@ -1116,9 +1157,9 @@ TabItem:AddToggle("AutoShellsFarm", {
         if state then
             task.spawn(function()
                 while getgenv().AutoShells do
-                    for i,v in pairs(game.workspace:GetDescendants()) do
+                    for i,v in pairs(game.Workspace:GetDescendants()) do
                         if v:FindFirstChild("Hitbox") then
-                            TeleportTo(CFrame.new(v.Position))
+                            TweenTo(CFrame.new(v.Position), false)
                         end
                     end
                     task.wait()
