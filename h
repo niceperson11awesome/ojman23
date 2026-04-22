@@ -84,13 +84,11 @@ local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
--- ── FIX: cache ReplicatedStorage.Events directly (same pattern as the reference script)
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RSEvents = ReplicatedStorage:WaitForChild("Events")
 
 local lp = Players.LocalPlayer
 
--- Enable AutoRepeatQuests so the script doesn't have to re-accept every quest
 task.spawn(function()
     local coreGui = lp.PlayerGui:WaitForChild("CoreGUI")
     pcall(function()
@@ -185,8 +183,6 @@ local function GetCurrentQuestName()
             local client = v.Quest:FindFirstChild("Client", true)
             if client then
                 local parentName = client.Parent.Name
-                -- AutoRepeatQuests wraps the quest inside a RepeatQuest frame —
-                -- go one level up to get the actual quest name
                 if parentName == "RepeatQuest" then
                     return client.Parent.Parent.Name
                 else
@@ -682,6 +678,49 @@ TabPrestige:AddToggle("AntiItemKick", {
 })
 
 local QuickToggles = {"AutoSummon", "AutoBarrage", "AutoPunch", "AutoHeavy", "AutoT", "AutoF", "AutoY", "AutoStrength", "AutoHamon"}
+
+-- ══════════════════════════════════════════════════════════════
+-- AUTO DISABLE QUICK TOGGLES AT LEVEL 85+ (before prestige bugs)
+-- Automatically re-enables them after prestige resets the level
+-- ══════════════════════════════════════════════════════════════
+task.spawn(function()
+    local wereEnabled = false
+    while true do
+        task.wait(2)
+        pcall(function()
+            local level = GetCurrentLevel()
+            if level >= 85 and not wereEnabled then
+                local anyOn = false
+                for _, name in pairs(QuickToggles) do
+                    if getgenv()[name] then anyOn = true break end
+                end
+                if anyOn then
+                    wereEnabled = true
+                    for _, name in pairs(QuickToggles) do
+                        getgenv()[name] = false
+                    end
+                    Fluent:Notify({
+                        Title = "Quick Toggles",
+                        Content = "Disabled at level 85 to prevent prestige bugs.",
+                        Duration = 5
+                    })
+                end
+            elseif level < 85 and wereEnabled then
+                -- Level dropped back under 85 = prestige happened, safe to re-enable
+                wereEnabled = false
+                for _, name in pairs(QuickToggles) do
+                    getgenv()[name] = true
+                end
+                Fluent:Notify({
+                    Title = "Quick Toggles",
+                    Content = "Re-enabled after prestige reset.",
+                    Duration = 5
+                })
+            end
+        end)
+    end
+end)
+
 TabPrestige:AddToggle("QuickToggle", {
     Title = "Enable All Quick Toggles",
     Default = false,
@@ -709,7 +748,7 @@ TabPrestige:AddToggle("AutoTalent", { Title = "Auto Talent", Default = false, Ca
 local lastPunchTime = 0
 
 -- ══════════════════════════════════════════════════════════════
--- AUTO PRESTIGE FARM (Start) — fixed prestige + TweenTo navigation
+-- AUTO PRESTIGE FARM (Start)
 -- ══════════════════════════════════════════════════════════════
 task.spawn(function()
     while task.wait() do
@@ -735,9 +774,6 @@ task.spawn(function()
                             end)
                             task.wait(1)
                             SendPrestigeWebhook(false)
-                            -- ── FIX: wait for the server to actually reset the level before
-                            --         resuming — without this the loop re-enters the prestige
-                            --         block immediately on the next frame since level still reads ≥100
                             local waitStart = tick()
                             while GetCurrentLevel() >= 100 and (tick() - waitStart) < 10 do
                                 task.wait(0.5)
@@ -752,8 +788,6 @@ task.spawn(function()
                             if currentQuest ~= bracket.QuestName then
                                 local giver = FindQuestGiver(bracket.Giver)
                                 if giver and giver:FindFirstChild("ProximityPrompt") then
-                                    -- Clear all physics state that combat leaves behind
-                                    -- before tweening, otherwise the humanoid snaps back
                                     char.Humanoid.PlatformStand = false
                                     char.HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
                                     char.HumanoidRootPart.AssemblyAngularVelocity = Vector3.zero
@@ -817,7 +851,7 @@ end)
 local lastGolemPunchTime = 0
 
 -- ══════════════════════════════════════════════════════════════
--- AUTO GOLEM FARM (Start2) — fixed TweenTo navigation
+-- AUTO GOLEM FARM (Start2)
 -- ══════════════════════════════════════════════════════════════
 task.spawn(function()
     while task.wait() do
@@ -1356,13 +1390,38 @@ game:GetService("UserInputService").InputBegan:Connect(function(input, gameProce
     end
 end)
 
-TabMisc:AddButton({
+-- ══════════════════════════════════════════════════════════════
+-- ANTI AFK — toggle that disconnects Idled event AND sends a
+-- virtual click every 60s to prevent server-side idle kick
+-- ══════════════════════════════════════════════════════════════
+getgenv().AntiAFK = false
+
+TabMisc:AddToggle("AntiAFK", {
     Title = "Anti AFK",
-    Callback = function()
-        for i,v in pairs(getconnections(game:GetService("Players").LocalPlayer.Idled)) do
-            v:Disable()
+    Default = false,
+    Callback = function(state)
+        getgenv().AntiAFK = state
+        if state then
+            pcall(function()
+                for _, v in pairs(getconnections(game:GetService("Players").LocalPlayer.Idled)) do
+                    v:Disable()
+                end
+            end)
+            task.spawn(function()
+                local VU = game:GetService("VirtualUser")
+                while getgenv().AntiAFK do
+                    pcall(function()
+                        VU:Button1Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+                        task.wait(0.1)
+                        VU:Button1Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+                    end)
+                    task.wait(60)
+                end
+            end)
+            Fluent:Notify({ Title = "Anti AFK", Content = "Anti AFK enabled!", Duration = 2 })
+        else
+            Fluent:Notify({ Title = "Anti AFK", Content = "Anti AFK disabled.", Duration = 2 })
         end
-        Fluent:Notify({ Title = "Anti AFK", Content = "Anti AFK has been enabled!", Duration = 2 })
     end
 })
 
