@@ -412,13 +412,19 @@ task.spawn(function()
     end
 end)
 
+-- ══════════════════════════════════════════════════════════════
+-- AUTO SUMMON — fixed: also checks if Stand model actually
+-- exists in the character, catches StandOut.Value desync
+-- ══════════════════════════════════════════════════════════════
 task.spawn(function()
-    while task.wait() do
+    while task.wait(0.5) do
         if getgenv().AutoSummon then
             pcall(function()
                 local char = lp.Character
                 if char and char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0 then
-                    if not char.Status.StandOut.Value then
+                    -- Trust both the flag AND whether the Stand model physically exists
+                    local standActuallyOut = char:FindFirstChild("Stand") or char:FindFirstChild("StandSuit")
+                    if not char.Status.StandOut.Value or not standActuallyOut then
                         local coreGui = lp.PlayerGui:FindFirstChild("CoreGUI")
                         if coreGui and coreGui:FindFirstChild("Events") then
                             coreGui.Events.SummonStand:InvokeServer()
@@ -706,7 +712,6 @@ task.spawn(function()
                     })
                 end
             elseif level < 85 and wereEnabled then
-                -- Level dropped back under 85 = prestige happened, safe to re-enable
                 wereEnabled = false
                 for _, name in pairs(QuickToggles) do
                     getgenv()[name] = true
